@@ -1,5 +1,6 @@
 package com.example.messenger.crypto;
 
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -8,6 +9,7 @@ import java.util.Base64;
 
     // Placeholder Ed448 implementation so the app has a real slot for future crypto logic.
 @Component
+@Primary
 public class Ed448MessageCrypto implements MessageCrypto {
 
     // Simple version tag so you can evolve the wire format later without guessing.
