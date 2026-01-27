@@ -2,6 +2,7 @@ plugins {
     id 'java'
     id 'org.springframework.boot' version '4.0.1'
     id 'io.spring.dependency-management' version '1.1.7'
+    id 'jacoco'
 }
 
 group = 'com.example'
@@ -21,12 +22,19 @@ repositories {
 dependencies {
     // Core web (recommended)
     implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
 
     // If you are actually exposing Spring Data repositories as REST endpoints
     implementation 'org.springframework.boot:spring-boot-starter-data-rest'
 
     // Persistence (gives you @Entity, repositories, etc.)
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+
+    // Security
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'io.jsonwebtoken:jjwt-api:0.12.5'
+    implementation 'io.jsonwebtoken:jjwt-impl:0.12.5'
+    implementation 'io.jsonwebtoken:jjwt-jackson:0.12.5'
 
     // DB
     implementation 'org.postgresql:postgresql:42.7.7'
@@ -58,10 +66,74 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-kafka-test'
     testImplementation 'org.springframework.boot:spring-boot-starter-webservices-test'
     testImplementation 'org.springframework.boot:spring-boot-starter-websocket-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-webclient-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    
+    // H2 database for testing
+    testRuntimeOnly 'com.h2database:h2'
 }
 
 
 tasks.named('test') {
     useJUnitPlatform()
+    finalizedBy jacocoTestReport
+}
+
+// JaCoCo Configuration
+jacoco {
+    toolVersion = "0.8.11"
+}
+
+jacocoTestReport {
+    dependsOn test
+    
+    reports {
+        xml.required = true
+        html.required = true
+        csv.required = false
+    }
+    
+    afterEvaluate {
+        classDirectories.setFrom(files(classDirectories.files.collect {
+            fileTree(dir: it, exclude: [
+                // Exclude configuration classes
+                '**/config/**',
+                // Exclude application entry point
+                '**/MessengerApplication.class',
+                // Exclude DTOs and domain objects (optional - remove if you want coverage)
+                '**/dto/**',
+            ])
+        }))
+    }
+}
+
+jacocoTestCoverageVerification {
+    dependsOn jacocoTestReport
+    
+    violationRules {
+        rule {
+            limit {
+                // Target 80% line coverage
+                minimum = 0.80
+            }
+        }
+        
+        rule {
+            element = 'CLASS'
+            excludes = [
+                'com.example.messenger.MessengerApplication',
+                'com.example.messenger.config.*',
+                'com.example.messenger.dto.*'
+            ]
+            limit {
+                counter = 'LINE'
+                minimum = 0.70
+            }
+        }
+    }
+}
+
+// Run coverage verification as part of check task
+tasks.named('check') {
+    dependsOn jacocoTestCoverageVerification
 }

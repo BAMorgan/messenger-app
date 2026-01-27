@@ -30,7 +30,11 @@ public class MessageService {
     }
 
     public AppUser createUser(String username) {
-        return users.save(new AppUser(username));
+        // Legacy method - users should register via AuthService instead
+        // This method is kept for backward compatibility but requires email and password
+        throw new UnsupportedOperationException(
+                "Use AuthService.register() instead. This method requires email and password for authentication."
+        );
     }
 
     //use 'var' instead of AppUser here? why?

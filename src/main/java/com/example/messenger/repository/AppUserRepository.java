@@ -9,4 +9,5 @@ import java.util.Optional;
 //SPring Data generates the implementations at runtime
 public interface AppUserRepository extends JpaRepository<AppUser,Long> {
     Optional<AppUser> findByUsername(String username);//OPtional = might not exist
+    Optional<AppUser> findByEmail(String email);
 }
