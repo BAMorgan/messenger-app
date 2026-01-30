@@ -24,6 +24,10 @@ public class Message {
     @Column(nullable = false)
     private Instant createdAt = Instant.now();
 
+    /** Unique per conversation; used for deduplication. Nullable for backward compatibility. */
+    @Column(name = "idempotency_key", length = 255)
+    private String idempotencyKey;
+
     protected Message() {}
 
     public Message(Conversation conversation, AppUser sender, String body) {
@@ -32,8 +36,23 @@ public class Message {
         this.body = body;
     }
 
+    public Message(Conversation conversation, AppUser sender, String body, String idempotencyKey) {
+        this.conversation = conversation;
+        this.sender = sender;
+        this.body = body;
+        this.idempotencyKey = idempotencyKey;
+    }
+
     public Long getId() {
         return id;
+    }
+
+    public Conversation getConversation() {
+        return conversation;
+    }
+
+    public AppUser getSender() {
+        return sender;
     }
 
     public String getBody() {
@@ -44,4 +63,7 @@ public class Message {
         return createdAt;
     }
 
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
 }

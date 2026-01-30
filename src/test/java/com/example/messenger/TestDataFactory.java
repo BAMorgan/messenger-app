@@ -2,7 +2,8 @@ package com.example.messenger;
 
 import com.example.messenger.domain.AppUser;
 import com.example.messenger.domain.Conversation;
-import com.example.messenger.domain.Message;
+import com.example.messenger.domain.ConversationType;
+import com.example.messenger.domain.ParticipantRole;
 
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
@@ -62,10 +63,25 @@ public final class TestDataFactory {
 
     /**
      * Generates a unique conversation ID for testing.
-     * 
+     *
      * @return a unique long ID
      */
     public static Long generateConversationId() {
         return ID_GENERATOR.getAndIncrement();
+    }
+
+    /**
+     * Creates an in-memory one-to-one conversation with two participants.
+     * Does not persist; for building test data in unit tests.
+     *
+     * @param userA first participant
+     * @param userB second participant
+     * @return a new Conversation with two participants
+     */
+    public static Conversation createConversation(AppUser userA, AppUser userB) {
+        Conversation conv = new Conversation(ConversationType.ONE_TO_ONE, null);
+        conv.addParticipant(userA, ParticipantRole.MEMBER);
+        conv.addParticipant(userB, ParticipantRole.MEMBER);
+        return conv;
     }
 }

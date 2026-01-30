@@ -11,6 +11,8 @@ import java.util.List;
 @RestController
 @RequestMapping("/api") //everyhting in this controler get /api prefix
 public class MessagingController {
+    private static final int DEFAULT_PAGE_SIZE = 50;
+
     private final MessageService service;
 
     public MessagingController(MessageService service) {
@@ -34,14 +36,22 @@ public class MessagingController {
     public Message sendMessage(
             @RequestParam Long conversationId,
             @RequestParam Long senderId,
-            @RequestParam String body
+            @RequestParam String body,
+            @RequestParam(required = false) String idempotencyKey
     ) {
-       return service.sendMessage(conversationId, senderId, body);
+       return service.sendMessage(conversationId, senderId, body, idempotencyKey);
     }
 
     @GetMapping("/conversations/{id}/messages")
-    public List<MessageService.MessageView> list(@PathVariable Long id){
+    public Object list(
+            @PathVariable Long id,
+            @RequestParam(required = false) Long cursor,
+            @RequestParam(required = false) Integer limit
+    ) {
+        if (cursor != null || (limit != null && limit > 0)) {
+            int pageSize = limit != null && limit > 0 ? Math.min(limit, 100) : DEFAULT_PAGE_SIZE;
+            return service.listMessages(id, cursor, pageSize);
+        }
         return service.listMessages(id);
     }
-
 }
