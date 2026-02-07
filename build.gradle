@@ -55,6 +55,11 @@ dependencies {
     // keep your postgres driver
     runtimeOnly "org.postgresql:postgresql"
 
+    // Observability
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'io.micrometer:micrometer-tracing-bridge-otel'
+    implementation 'io.opentelemetry:opentelemetry-exporter-otlp'
+
     // Dev experience
     developmentOnly 'org.springframework.boot:spring-boot-devtools'
 

@@ -3,11 +3,18 @@ package com.example.messenger.service;
 
 import com.example.messenger.crypto.MessageCrypto;
 import com.example.messenger.domain.*;
+import com.example.messenger.dto.CreateConversationRequest;
+import com.example.messenger.exception.CustomException;
 import com.example.messenger.repository.*;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+
+import org.springframework.http.HttpStatus;
 
 import java.time.Instant;
 import java.util.List;
@@ -22,6 +29,8 @@ public class MessageService {
     private final ConversationParticipantRepository participantRepository;
     private final EventService eventService;
     private final ObjectMapper objectMapper;
+    private final Counter messagesSentCounter;
+    private final Timer messageSendTimer;
 
     public MessageService(
             AppUserRepository users,
@@ -30,7 +39,8 @@ public class MessageService {
             ConversationRepository conversations,
             ConversationParticipantRepository participantRepository,
             EventService eventService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            MeterRegistry meterRegistry
     ) {
         this.users = users;
         this.crypto = crypto;
@@ -39,6 +49,12 @@ public class MessageService {
         this.participantRepository = participantRepository;
         this.eventService = eventService;
         this.objectMapper = objectMapper;
+        this.messagesSentCounter = Counter.builder("messenger.messages.sent")
+                .description("Total messages sent")
+                .register(meterRegistry);
+        this.messageSendTimer = Timer.builder("messenger.messages.send.duration")
+                .description("Message send latency")
+                .register(meterRegistry);
     }
 
     public AppUser createUser(String username) {
@@ -49,10 +65,37 @@ public class MessageService {
         );
     }
 
+    /**
+     * Creates a conversation from API request. ONE_TO_ONE requires exactly 2 participants;
+     * GROUP requires 1–50 participants and optional name.
+     */
+    public Conversation createConversation(CreateConversationRequest request) {
+        ConversationType type = request.getType();
+        List<Long> ids = request.getParticipantIds();
+        if (type == ConversationType.ONE_TO_ONE && (ids == null || ids.size() != 2)) {
+            throw new CustomException("ONE_TO_ONE conversation requires exactly 2 participant IDs", HttpStatus.BAD_REQUEST);
+        }
+        if (type == ConversationType.GROUP && (ids == null || ids.isEmpty())) {
+            throw new CustomException("GROUP conversation requires at least one participant", HttpStatus.BAD_REQUEST);
+        }
+        if (type == ConversationType.ONE_TO_ONE) {
+            return createConversation(ids.get(0), ids.get(1));
+        }
+        String name = request.getName() != null ? request.getName() : "Group";
+        Conversation group = createGroupConversation(name, ids.get(0));
+        for (int i = 1; i < ids.size(); i++) {
+            addParticipantToConversation(group.getId(), ids.get(i), ParticipantRole.MEMBER);
+        }
+        return conversations.findById(group.getId()).orElseThrow(() ->
+                new CustomException("Conversation not found", HttpStatus.NOT_FOUND));
+    }
+
     /** Creates a one-to-one conversation with two participants. */
     public Conversation createConversation(Long userAId, Long userBId) {
-        AppUser a = users.findById(userAId).orElseThrow();
-        AppUser b = users.findById(userBId).orElseThrow();
+        AppUser a = users.findById(userAId).orElseThrow(() ->
+                new CustomException("User not found: " + userAId, HttpStatus.NOT_FOUND));
+        AppUser b = users.findById(userBId).orElseThrow(() ->
+                new CustomException("User not found: " + userBId, HttpStatus.NOT_FOUND));
         Conversation conv = new Conversation(ConversationType.ONE_TO_ONE, null);
         conv.addParticipant(a, ParticipantRole.MEMBER);
         conv.addParticipant(b, ParticipantRole.MEMBER);
@@ -61,7 +104,8 @@ public class MessageService {
 
     /** Creates a group conversation with the given name and owner. */
     public Conversation createGroupConversation(String name, Long ownerId) {
-        AppUser owner = users.findById(ownerId).orElseThrow();
+        AppUser owner = users.findById(ownerId).orElseThrow(() ->
+                new CustomException("User not found: " + ownerId, HttpStatus.NOT_FOUND));
         Conversation conv = new Conversation(ConversationType.GROUP, name);
         conv.addParticipant(owner, ParticipantRole.OWNER);
         return conversations.save(conv);
@@ -72,8 +116,10 @@ public class MessageService {
      * @throws IllegalStateException if the conversation is a group and already has the maximum number of participants
      */
     public Conversation addParticipantToConversation(Long conversationId, Long userId, ParticipantRole role) {
-        Conversation conversation = conversations.findById(conversationId).orElseThrow();
-        AppUser user = users.findById(userId).orElseThrow();
+        Conversation conversation = conversations.findById(conversationId).orElseThrow(() ->
+                new CustomException("Conversation not found: " + conversationId, HttpStatus.NOT_FOUND));
+        AppUser user = users.findById(userId).orElseThrow(() ->
+                new CustomException("User not found: " + userId, HttpStatus.NOT_FOUND));
         if (conversation.getType() == ConversationType.GROUP) {
             long count = participantRepository.countByConversationId(conversationId);
             if (count >= Conversation.MAX_GROUP_MEMBERS) {
@@ -94,41 +140,64 @@ public class MessageService {
      * with that key already exists for the conversation, returns the existing message without creating a duplicate.
      */
     public Message sendMessage(Long conversationId, Long senderId, String body, String idempotencyKey) {
-        Conversation conversation = conversations.findById(conversationId).orElseThrow();
-        AppUser sender = users.findById(senderId).orElseThrow();
+        Timer.Sample sample = Timer.start();
+        try {
+            Conversation conversation = conversations.findById(conversationId).orElseThrow(() ->
+                    new CustomException("Conversation not found: " + conversationId, HttpStatus.NOT_FOUND));
+            AppUser sender = users.findById(senderId).orElseThrow(() ->
+                    new CustomException("User not found: " + senderId, HttpStatus.NOT_FOUND));
 
-        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-            var existing = messages.findByConversationIdAndIdempotencyKey(conversationId, idempotencyKey);
-            if (existing.isPresent()) {
-                return existing.get();
+            if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+                var existing = messages.findByConversationIdAndIdempotencyKey(conversationId, idempotencyKey);
+                if (existing.isPresent()) {
+                    return existing.get();
+                }
             }
+
+            String encrypted = crypto.encrypt(conversationId, body);
+            Message message = idempotencyKey != null && !idempotencyKey.isBlank()
+                    ? new Message(conversation, sender, encrypted, idempotencyKey)
+                    : new Message(conversation, sender, encrypted);
+            message = messages.save(message);
+            messagesSentCounter.increment();
+
+            MessageView view = new MessageView(
+                    message.getId(),
+                    message.getSender().getId(),
+                    message.getSender().getUsername(),
+                    crypto.decrypt(conversationId, message.getBody()),
+                    message.getCreatedAt()
+            );
+            try {
+                String payload = objectMapper.writeValueAsString(view);
+                eventService.publish(conversation.getId(), "message", payload);
+            } catch (JsonProcessingException e) {
+                // Log but do not fail the request; message is already saved
+                org.slf4j.LoggerFactory.getLogger(MessageService.class).warn("Failed to publish message event: {}", e.getMessage());
+            }
+
+            return message;
+        } finally {
+            sample.stop(messageSendTimer);
         }
+    }
 
-        String encrypted = crypto.encrypt(conversationId, body);
-        Message message = idempotencyKey != null && !idempotencyKey.isBlank()
-                ? new Message(conversation, sender, encrypted, idempotencyKey)
-                : new Message(conversation, sender, encrypted);
-        message = messages.save(message);
-
-        MessageView view = new MessageView(
+    /** Converts a persisted message to a view with decrypted body (for API response). */
+    public MessageView toMessageView(Message message) {
+        long cid = message.getConversation().getId();
+        return new MessageView(
                 message.getId(),
                 message.getSender().getId(),
                 message.getSender().getUsername(),
-                crypto.decrypt(conversationId, message.getBody()),
+                crypto.decrypt(cid, message.getBody()),
                 message.getCreatedAt()
         );
-        try {
-            String payload = objectMapper.writeValueAsString(view);
-            eventService.publish(conversation.getId(), "message", payload);
-        } catch (JsonProcessingException e) {
-            // Log but do not fail the request; message is already saved
-            org.slf4j.LoggerFactory.getLogger(MessageService.class).warn("Failed to publish message event: {}", e.getMessage());
-        }
-
-        return message;
     }
 
     public List<MessageView> listMessages(Long conversationId) {
+        if (!conversations.existsById(conversationId)) {
+            throw new CustomException("Conversation not found: " + conversationId, HttpStatus.NOT_FOUND);
+        }
         return messages.findByConversationIdOrderByCreatedAtAsc(conversationId)
                 .stream()
                 .map(m -> new MessageView(
@@ -148,6 +217,9 @@ public class MessageService {
      * @return page with messages and nextCursor (id of last message, or null if no more)
      */
     public MessageListPage listMessages(Long conversationId, Long afterId, int limit) {
+        if (!conversations.existsById(conversationId)) {
+            throw new CustomException("Conversation not found: " + conversationId, HttpStatus.NOT_FOUND);
+        }
         List<Message> batch = afterId == null
                 ? messages.findByConversationIdOrderByIdAsc(conversationId, PageRequest.of(0, limit))
                 : messages.findByConversationIdAndIdGreaterThanOrderByIdAsc(conversationId, afterId, PageRequest.of(0, limit));

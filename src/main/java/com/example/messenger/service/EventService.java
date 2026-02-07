@@ -6,6 +6,8 @@ import com.example.messenger.repository.ConversationParticipantRepository;
 import com.example.messenger.repository.EventRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -30,6 +32,7 @@ public class EventService {
     private final EventRepository eventRepository;
     private final ConversationParticipantRepository participantRepository;
     private final ObjectMapper objectMapper;
+    private final Counter eventsPublishedCounter;
 
     /** User ID -> set of WebSocket sessions (thread-safe). */
     private final Map<Long, Set<WebSocketSession>> sessionsByUserId = new ConcurrentHashMap<>();
@@ -37,11 +40,22 @@ public class EventService {
     public EventService(
             EventRepository eventRepository,
             ConversationParticipantRepository participantRepository,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            MeterRegistry meterRegistry
     ) {
         this.eventRepository = eventRepository;
         this.participantRepository = participantRepository;
         this.objectMapper = objectMapper;
+        this.eventsPublishedCounter = Counter.builder("messenger.events.published")
+                .description("Total events published to WebSocket sessions")
+                .register(meterRegistry);
+    }
+
+    /** Returns the total number of active WebSocket connections across all users. */
+    public int getActiveConnectionCount() {
+        return sessionsByUserId.values().stream()
+                .mapToInt(Set::size)
+                .sum();
     }
 
     public void registerSession(Long userId, WebSocketSession session) {
@@ -64,6 +78,7 @@ public class EventService {
     public void publish(Long conversationId, String type, String payload) {
         Event event = new Event(conversationId, type, payload);
         event = eventRepository.save(event);
+        eventsPublishedCounter.increment();
 
         WebSocketMessage msg = new WebSocketMessage(
                 event.getId(),

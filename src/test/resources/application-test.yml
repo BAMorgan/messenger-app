@@ -1,0 +1,47 @@
+spring:
+  datasource:
+    # Use H2 for tests to avoid requiring PostgreSQL
+    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: true
+    show-sql: false
+
+  flyway:
+    enabled: false
+
+  sql:
+    init:
+      mode: never
+
+# Logging configuration for tests
+logging:
+  level:
+    root: WARN
+    com.example.messenger: INFO  # Show INFO and above for all messenger classes (including tests)
+    org.springframework.test: INFO
+    org.junit.jupiter: INFO  # JUnit test framework logs
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+# JWT configuration for tests
+jwt:
+  secret: test-secret-key-must-be-at-least-32-characters-long-for-hmac-sha256
+  access-token-expiration-ms: 900000  # 15 minutes
+  refresh-token-expiration-ms: 604800000  # 7 days
+
+# Observability: disable tracing export in tests; metrics still available via SimpleMeterRegistry
+management:
+  tracing:
+    enabled: false
+  endpoint:
+    health:
+      show-details: always

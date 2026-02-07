@@ -1,9 +1,12 @@
 spring:
+  application:
+    name: messenger
+
   datasource:
-    url: jdbc:postgresql://192.168.0.39:5432/messenger_db
+    url: jdbc:postgresql://192.168.0.18:5432/messenger_db
     driver-class-name: org.postgresql.Driver
-    username: admin
-    password: password
+    username: broom
+    password: fireguru56
 
   jpa:
     hibernate:
@@ -27,3 +30,27 @@ jwt:
   secret: ${JWT_SECRET:your-secret-key-change-in-production-use-environment-variable}
   access-token-expiration-ms: 900000  # 15 minutes
   refresh-token-expiration-ms: 604800000  # 7 days
+
+# --- Observability (Phase 1.6) ---
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+      show-components: always
+  tracing:
+    sampling:
+      probability: 1.0  # Sample all requests; lower in production (e.g. 0.1)
+  metrics:
+    tags:
+      application: messenger
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [rid=%X{requestId:-},tid=%X{traceId:-},sid=%X{spanId:-}] %-5level %logger{36} - %msg%n"
+  level:
+    com.example.messenger: DEBUG
