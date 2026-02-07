@@ -102,8 +102,10 @@ class WebSocketMessageDeliveryIntegrationTest {
 
         HttpHeaders convHeaders = new HttpHeaders();
         convHeaders.setBearerAuth(senderAuth.getAccessToken());
-        String convUrl = "http://localhost:" + port + "/api/conversations?userA=" + senderAuth.getUserId() + "&userB=" + recipientAuth.getUserId();
-        ResponseEntity<String> convResp = restTemplate.exchange(convUrl, org.springframework.http.HttpMethod.POST, new HttpEntity<>(convHeaders), String.class);
+        convHeaders.setContentType(MediaType.APPLICATION_JSON);
+        String convBody = "{\"type\":\"ONE_TO_ONE\",\"participantIds\":[" + senderAuth.getUserId() + "," + recipientAuth.getUserId() + "]}";
+        String convUrl = "http://localhost:" + port + "/api/v1/conversations";
+        ResponseEntity<String> convResp = restTemplate.exchange(convUrl, org.springframework.http.HttpMethod.POST, new HttpEntity<>(convBody, convHeaders), String.class);
         assertTrue(convResp.getStatusCode().is2xxSuccessful(), "Create conversation: " + convResp.getBody());
         Long conversationId = objectMapper.readTree(convResp.getBody()).get("id").asLong();
 
@@ -140,8 +142,10 @@ class WebSocketMessageDeliveryIntegrationTest {
         String body = "Hello over WebSocket!";
         HttpHeaders msgHeaders = new HttpHeaders();
         msgHeaders.setBearerAuth(senderAuth.getAccessToken());
-        String msgUrl = "http://localhost:" + port + "/api/messages?conversationId=" + conversationId + "&senderId=" + senderAuth.getUserId() + "&body=" + java.net.URLEncoder.encode(body, java.nio.charset.StandardCharsets.UTF_8);
-        ResponseEntity<String> msgResp = restTemplate.exchange(msgUrl, org.springframework.http.HttpMethod.POST, new HttpEntity<>(msgHeaders), String.class);
+        msgHeaders.setContentType(MediaType.APPLICATION_JSON);
+        String msgBody = "{\"body\":\"" + body.replace("\"", "\\\"") + "\"}";
+        String msgUrl = "http://localhost:" + port + "/api/v1/conversations/" + conversationId + "/messages";
+        ResponseEntity<String> msgResp = restTemplate.exchange(msgUrl, org.springframework.http.HttpMethod.POST, new HttpEntity<>(msgBody, msgHeaders), String.class);
         assertTrue(msgResp.getStatusCode().is2xxSuccessful(), "Send message: " + msgResp.getBody());
 
         // Client should receive one event with same message payload (allow time for async delivery).
