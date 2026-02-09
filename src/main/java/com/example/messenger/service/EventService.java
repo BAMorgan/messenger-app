@@ -85,7 +85,7 @@ public class EventService {
                 event.getConversationId(),
                 event.getType(),
                 event.getPayload(),
-                event.getCreatedAt()
+                event.getCreatedAt().toString()
         );
         String json;
         try {

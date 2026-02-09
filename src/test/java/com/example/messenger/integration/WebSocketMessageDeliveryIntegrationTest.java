@@ -1,8 +1,11 @@
 package com.example.messenger.integration;
 
+import com.example.messenger.config.JwtConfig;
 import com.example.messenger.dto.AuthRequest;
 import com.example.messenger.dto.AuthResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.Keys;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -22,12 +25,14 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 import org.springframework.web.socket.WebSocketHttpHeaders;
 
+import javax.crypto.SecretKey;
+import java.nio.charset.StandardCharsets;
 import java.net.URI;
+import java.util.Date;
+import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -52,53 +57,44 @@ class WebSocketMessageDeliveryIntegrationTest {
     @LocalServerPort
     private int port;
 
+    @Autowired
+    private JwtConfig jwtConfig;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final RestTemplate restTemplate = new RestTemplate();
 
     @Test
     void websocket_connectWithValidJwt_succeeds() throws Exception {
-        AuthResponse auth = registerViaServer("wsuser", "wsuser@test.com");
-        BlockingQueue<String> received = new LinkedBlockingQueue<>();
-        CountDownLatch connected = new CountDownLatch(1);
-        AtomicReference<WebSocketSession> sessionRef = new AtomicReference<>();
-
-        StandardWebSocketClient client = new StandardWebSocketClient();
-        String wsUrl = "ws://localhost:" + port + "/api/v1/events?token=" + auth.getAccessToken();
-        URI uri = URI.create(wsUrl);
-
-        Thread wsThread = new Thread(() -> {
-            try {
-                client.execute(new TextWebSocketHandler() {
-                    @Override
-                    public void afterConnectionEstablished(WebSocketSession session) {
-                        sessionRef.set(session);
-                        connected.countDown();
-                    }
-
-                    @Override
-                    protected void handleTextMessage(WebSocketSession session, TextMessage message) {
-                        received.add(message.getPayload());
-                    }
-                }, new WebSocketHttpHeaders(), uri);
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        });
-        wsThread.start();
-
-        assertTrue(connected.await(10, TimeUnit.SECONDS), "WebSocket should connect with valid JWT");
-
-        WebSocketSession session = sessionRef.get();
-        if (session != null && session.isOpen()) {
+        AuthResponse auth = registerViaServer("wsuser");
+        WebSocketSession session = connectWebSocket(auth.getAccessToken(), new LinkedBlockingQueue<>());
+        try {
+            assertTrue(session.isOpen(), "WebSocket should connect with valid JWT");
+        } finally {
             session.close();
         }
-        wsThread.join(2000);
+    }
+
+    @Test
+    void websocket_connectWithoutToken_rejected() {
+        assertHandshakeRejected("ws://localhost:" + port + "/api/v1/events");
+    }
+
+    @Test
+    void websocket_connectWithInvalidToken_rejected() {
+        assertHandshakeRejected("ws://localhost:" + port + "/api/v1/events?token=not-a-jwt");
+    }
+
+    @Test
+    void websocket_connectWithExpiredToken_rejected() throws Exception {
+        AuthResponse auth = registerViaServer("wsexpired");
+        String expiredToken = createExpiredAccessToken(auth.getUsername());
+        assertHandshakeRejected("ws://localhost:" + port + "/api/v1/events?token=" + expiredToken);
     }
 
     @Test
     void whenMessageSentViaRest_recipientReceivesOneEventOverWebSocket() throws Exception {
-        AuthResponse senderAuth = registerViaServer("wsender", "wsender@test.com");
-        AuthResponse recipientAuth = registerViaServer("wrecipient", "wrecipient@test.com");
+        AuthResponse senderAuth = registerViaServer("wsender");
+        AuthResponse recipientAuth = registerViaServer("wrecipient");
 
         HttpHeaders convHeaders = new HttpHeaders();
         convHeaders.setBearerAuth(senderAuth.getAccessToken());
@@ -110,34 +106,8 @@ class WebSocketMessageDeliveryIntegrationTest {
         Long conversationId = objectMapper.readTree(convResp.getBody()).get("id").asLong();
 
         BlockingQueue<String> received = new LinkedBlockingQueue<>();
-        CountDownLatch connected = new CountDownLatch(1);
-        AtomicReference<WebSocketSession> sessionRef = new AtomicReference<>();
-
-        StandardWebSocketClient client = new StandardWebSocketClient();
-        String wsUrl = "ws://localhost:" + port + "/api/v1/events?token=" + recipientAuth.getAccessToken();
-        URI uri = URI.create(wsUrl);
-
-        Thread wsThread = new Thread(() -> {
-            try {
-                client.execute(new TextWebSocketHandler() {
-                    @Override
-                    public void afterConnectionEstablished(WebSocketSession session) {
-                        sessionRef.set(session);
-                        connected.countDown();
-                    }
-
-                    @Override
-                    protected void handleTextMessage(WebSocketSession session, TextMessage message) {
-                        received.add(message.getPayload());
-                    }
-                }, new WebSocketHttpHeaders(), uri);
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        });
-        wsThread.start();
-
-        assertTrue(connected.await(10, TimeUnit.SECONDS), "WebSocket should connect");
+        WebSocketSession session = connectWebSocket(recipientAuth.getAccessToken(), received);
+        assertTrue(session.isOpen(), "WebSocket should connect");
 
         String body = "Hello over WebSocket!";
         HttpHeaders msgHeaders = new HttpHeaders();
@@ -148,29 +118,26 @@ class WebSocketMessageDeliveryIntegrationTest {
         ResponseEntity<String> msgResp = restTemplate.exchange(msgUrl, org.springframework.http.HttpMethod.POST, new HttpEntity<>(msgBody, msgHeaders), String.class);
         assertTrue(msgResp.getStatusCode().is2xxSuccessful(), "Send message: " + msgResp.getBody());
 
-        // Client should receive one event with same message payload (allow time for async delivery).
-        // In this embedded setup the client may receive the event; if so, assert payload.
-        Thread.sleep(1000);
         String raw = received.poll(15, TimeUnit.SECONDS);
-        if (raw != null) {
-            var eventNode = objectMapper.readTree(raw);
-            assertEquals("message", eventNode.get("type").asText());
-            assertEquals(conversationId, eventNode.get("conversationId").asLong());
-            var payload = objectMapper.readTree(eventNode.get("payload").asText());
-            assertEquals(body, payload.get("body").asText());
-            assertEquals(senderAuth.getUserId(), payload.get("senderId").asLong());
-            assertEquals("wsender", payload.get("senderUsername").asText());
-        }
-        // If raw == null, REST send and WebSocket connect succeeded; delivery may be environment-dependent.
+        assertNotNull(raw, "Expected one WebSocket message event after REST send");
+        var eventNode = objectMapper.readTree(raw);
+        assertEquals("message", eventNode.get("type").asText());
+        assertEquals(conversationId, eventNode.get("conversationId").asLong());
+        var payload = objectMapper.readTree(eventNode.get("payload").asText());
+        assertEquals(body, payload.get("body").asText());
+        assertEquals(senderAuth.getUserId(), payload.get("senderId").asLong());
+        assertEquals(senderAuth.getUsername(), payload.get("senderUsername").asText());
 
-        WebSocketSession session = sessionRef.get();
-        if (session != null && session.isOpen()) {
+        if (session.isOpen()) {
             session.close();
         }
-        wsThread.join(2000);
     }
 
-    private AuthResponse registerViaServer(String username, String email) throws Exception {
+    private AuthResponse registerViaServer(String usernamePrefix) throws Exception {
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        String username = usernamePrefix + "_" + suffix;
+        String email = username + "@test.com";
+
         AuthRequest request = new AuthRequest();
         request.setUsernameOrEmail(username);
         request.setEmail(email);
@@ -185,5 +152,37 @@ class WebSocketMessageDeliveryIntegrationTest {
                 String.class);
         assertTrue(resp.getStatusCode().is2xxSuccessful(), "Register: " + resp.getBody());
         return objectMapper.readValue(resp.getBody(), AuthResponse.class);
+    }
+
+    private WebSocketSession connectWebSocket(String token, BlockingQueue<String> received)
+            throws Exception {
+        StandardWebSocketClient client = new StandardWebSocketClient();
+        String wsUrl = "ws://localhost:" + port + "/api/v1/events?token=" + token;
+        return client.execute(new TextWebSocketHandler() {
+            @Override
+            protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+                received.add(message.getPayload());
+            }
+        }, new WebSocketHttpHeaders(), URI.create(wsUrl)).get(10, TimeUnit.SECONDS);
+    }
+
+    private void assertHandshakeRejected(String wsUrl) {
+        StandardWebSocketClient client = new StandardWebSocketClient();
+        assertThrows(Exception.class, () ->
+                client.execute(new TextWebSocketHandler() {}, new WebSocketHttpHeaders(), URI.create(wsUrl))
+                        .get(10, TimeUnit.SECONDS));
+    }
+
+    private String createExpiredAccessToken(String username) {
+        SecretKey key = Keys.hmacShaKeyFor(jwtConfig.getSecret().getBytes(StandardCharsets.UTF_8));
+        Date now = new Date();
+        Date issuedAt = new Date(now.getTime() - 120_000);
+        Date expiredAt = new Date(now.getTime() - 60_000);
+        return Jwts.builder()
+                .subject(username)
+                .issuedAt(issuedAt)
+                .expiration(expiredAt)
+                .signWith(key)
+                .compact();
     }
 }
