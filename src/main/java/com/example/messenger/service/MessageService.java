@@ -19,6 +19,7 @@ import org.springframework.http.HttpStatus;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 @Service //"business logic"
 public class MessageService {
@@ -171,7 +172,14 @@ public class MessageService {
                     message.getCreatedAt()
             );
             try {
-                String payload = objectMapper.writeValueAsString(view);
+                // Serialize event payload with a string timestamp to avoid runtime mapper/module coupling.
+                String payload = objectMapper.writeValueAsString(Map.of(
+                        "id", view.id(),
+                        "senderId", view.senderId(),
+                        "senderUsername", view.senderUsername(),
+                        "body", view.body(),
+                        "createdAt", view.createdAt().toString()
+                ));
                 eventService.publish(conversation.getId(), "message", payload);
             } catch (JsonProcessingException e) {
                 // Log but do not fail the request; message is already saved
