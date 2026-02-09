@@ -3,6 +3,7 @@ package com.example.messenger.service;
 
 import com.example.messenger.crypto.MessageCrypto;
 import com.example.messenger.domain.*;
+import com.example.messenger.dto.ConversationSummary;
 import com.example.messenger.dto.CreateConversationRequest;
 import com.example.messenger.exception.CustomException;
 import com.example.messenger.repository.*;
@@ -146,6 +147,7 @@ public class MessageService {
                     new CustomException("Conversation not found: " + conversationId, HttpStatus.NOT_FOUND));
             AppUser sender = users.findById(senderId).orElseThrow(() ->
                     new CustomException("User not found: " + senderId, HttpStatus.NOT_FOUND));
+            ensureParticipant(conversationId, senderId);
 
             if (idempotencyKey != null && !idempotencyKey.isBlank()) {
                 var existing = messages.findByConversationIdAndIdempotencyKey(conversationId, idempotencyKey);
@@ -236,9 +238,44 @@ public class MessageService {
         return new MessageListPage(views, nextCursor);
     }
 
+    /**
+     * Cursor-paginated message list with participant authorization check.
+     */
+    public MessageListPage listMessages(Long conversationId, Long requesterUserId, Long afterId, int limit) {
+        if (!conversations.existsById(conversationId)) {
+            throw new CustomException("Conversation not found: " + conversationId, HttpStatus.NOT_FOUND);
+        }
+        ensureParticipant(conversationId, requesterUserId);
+        return listMessages(conversationId, afterId, limit);
+    }
+
     /** DTO for message list responses; includes sender info for multi-user chats. */
     public record MessageView(Long id, Long senderId, String senderUsername, String body, Instant createdAt) {}
 
     /** Cursor-paginated message list response. */
     public record MessageListPage(List<MessageView> messages, Long nextCursor) {}
+
+    /**
+     * Lists all conversations for a user. Returns lightweight summaries with participant usernames.
+     */
+    public List<ConversationSummary> listConversationsForUser(Long userId) {
+        List<Conversation> convs = conversations.findByParticipantUserId(userId);
+        return convs.stream()
+                .map(c -> new ConversationSummary(
+                        c.getId(),
+                        c.getType(),
+                        c.getName(),
+                        c.getParticipants().stream()
+                                .map(p -> p.getUser().getUsername())
+                                .toList()
+                ))
+                .toList();
+    }
+
+    private void ensureParticipant(Long conversationId, Long userId) {
+        boolean participant = participantRepository.existsByConversation_IdAndUser_Id(conversationId, userId);
+        if (!participant) {
+            throw new CustomException("Forbidden: user is not a participant in this conversation", HttpStatus.FORBIDDEN);
+        }
+    }
 }

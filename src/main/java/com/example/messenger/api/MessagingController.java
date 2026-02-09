@@ -25,6 +25,12 @@ public class MessagingController {
         this.service = service;
     }
 
+    @GetMapping("/conversations")
+    public ResponseEntity<List<ConversationSummary>> listConversations(@AuthenticationPrincipal AppUser currentUser) {
+        List<ConversationSummary> conversations = service.listConversationsForUser(currentUser.getId());
+        return ResponseEntity.ok(conversations);
+    }
+
     @PostMapping("/conversations")
     public ResponseEntity<Conversation> createConversation(@Valid @RequestBody CreateConversationRequest request) {
         Conversation conversation = service.createConversation(request);
@@ -55,10 +61,11 @@ public class MessagingController {
     public ResponseEntity<PaginatedResponse<MessageResponse>> listMessages(
             @PathVariable Long id,
             @RequestParam(required = false) Long cursor,
-            @RequestParam(required = false) Integer limit
+            @RequestParam(required = false) Integer limit,
+            @AuthenticationPrincipal AppUser currentUser
     ) {
         int pageSize = (limit != null && limit > 0) ? Math.min(limit, MAX_PAGE_SIZE) : DEFAULT_PAGE_SIZE;
-        MessageService.MessageListPage page = service.listMessages(id, cursor, pageSize);
+        MessageService.MessageListPage page = service.listMessages(id, currentUser.getId(), cursor, pageSize);
         List<MessageResponse> items = page.messages().stream()
                 .map(v -> new MessageResponse(v.id(), v.senderId(), v.senderUsername(), v.body(), v.createdAt()))
                 .toList();
